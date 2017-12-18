@@ -4,7 +4,8 @@
   "description": "",
   "main": "index.js",
   "dependencies": {
-    "restify": "^6.3.4"
+    "restify": "^6.3.4",
+    "youtube-dl": "^1.12.2"
   },
   "devDependencies": {},
   "scripts": {
