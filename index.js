@@ -2,6 +2,8 @@
 const restify = require('restify');
 
 const http = require('http');
+const { URL } = require('url');
+
 const fs = require('fs');
 const youtubedl = require('youtube-dl');
 
@@ -11,6 +13,7 @@ let storedData = {
   currentSong: null,
   remoteQueue: [],
   queue: [],
+  volume: 0.5,
   id: 0,
 };
 
@@ -19,31 +22,60 @@ function saveData(f) {
   fs.writeFile('data.json', JSON.stringify(storedData, null, 2), e => e && console.error(e));
 }
 
-function loadEntry(entry) {
+function loadEntry(entry, stream) {
   if (entry.status == 'downloaded') return;
-  const out = fs.createWriteStream(`videocache/${entry.id}`);
-  const request = http.get(entry.url, res => res.pipe(out));
-  console.log('Downloading', entry.id, entry.name);
-  // console.log(entry.title, entry.id, entry.url, "Le ' thingy");
-  request.on('error', (e) => {
-    console.log('Download error', e);
-    entry.status = 'download error';
-    fs.unlink(entry.id, () => {});
-    saveData();
-  });
-  request.on('finish', () => {
+  function finished() {
     console.log('Download finished', entry.id);
     entry.status = 'downloaded';
     saveData();
-  });
+  }
+  console.log('Downloading', entry.id, entry.name, entry.url, !!stream);
+  if (stream) {
+    const out = fs.createWriteStream(`videocache/${entry.id}`);
+    stream.pipe(out).on('finish', finished).on('error', (e) => {
+      console.log('Download error', entry.id, e);
+      entry.status = 'download error';
+      fs.unlink(`videocache/${entry.id}`, () => {});
+      saveData();
+    });
+  } else {
+    entry.url = entry.url.replace(/^https:\/\//, 'http://');
+    let u = entry.url;
+    if (u.match(/projectweek/)) {
+      u = new URL(u);
+    }
+    const request = http.get(u, (res) => {
+      if (res.statusCode != 200) {
+        console.log('Download error: Wrong status code:', res.statusCode, res.statusMessage, entry.id);
+        entry.status = 'failed';
+        saveData();
+        return;
+      }
+      res.on('error', (e) => {
+        console.log('Inner download error', e);
+        entry.status = 'failed';
+        saveData();
+      });
+      const out = fs.createWriteStream(`videocache/${entry.id}`);
+      res.pipe(out).on('finish', finished);
+    });
+    request.on('error', (e) => {
+      console.log('Download error', e);
+      entry.status = 'download error';
+      fs.unlink(`videocache/${entry.id}`, () => {});
+      saveData();
+    });
+  }
 }
 
+let lastNext = 0;
 function nextSong() {
+  if (Date.now() - lastNext < 10000) return;
+  lastNext = Date.now();
   const id = storedData.currentSong;
   song = storedData.queue.find(s => s.id > id && s.status == 'downloaded');
   song = song || storedData.queue.find(s => s.status == 'downloaded');
   storedData.currentSong = song ? song.id : null;
-  console.log('nextSong', id, song, storedData.currentSong);
   saveData();
 }
 
@@ -56,22 +88,21 @@ setInterval(() => {
   if (!current) return;
   const old = storedData.queue.filter(s => s.id < current);
   for (let i = 0; i < old.length - 10; i += 1) {
-    storedData.queue.shift();
+    fs.unlink(`videocache/${storedData.queue.shift().id}`, () => {});
   }
   if (old.length > 10) saveData();
 }, 5000);
 
 function loadData(data) {
   storedData = data;
-  data.queue.forEach(loadEntry);
+  data.queue.forEach(e => loadEntry(e));
   fs.readdir('videocache', (err, items) => items.forEach((f) => {
     if (storedData.queue.find(e => e.id == f)) return;
-    fs.unlink(f, () => {});
+    fs.unlink(`videocache/${f}`, () => {});
   }));
   let song = storedData.queue.find(s => s.id == storedData.currentSong);
   song = song || storedData.queue.find(s => s.status == 'downloaded');
   if (song) {
-    console.log('currentSong', song.id);
     storedData.currentSong = song.id;
     saveData();
   } else {
@@ -81,27 +112,45 @@ function loadData(data) {
 
 fs.readFile('data.json', 'utf8', (err, data) => !err && data && loadData(JSON.parse(data)));
 
-function addQueue(url, name) {
+function addQueue(url, name, stream) {
   const entry = {
     status: 'downloading',
     url,
     name,
     id: storedData.id += 1,
   };
-  loadEntry(entry);
+  loadEntry(entry, stream);
   storedData.queue.push(entry);
   saveData();
 }
-function addUrl(url, cb) {
+function addUrl(url, cb, override) {
   if (url.match(/^url=/)) url = url.substr(4);
-  youtubedl.getInfo(url, [], (err, info) => {
+  url = url.replace(/^https:\/\//, 'http://');
+  if (!url.match(/^http:\/\//)) {
+    return cb && cb(false, 'Invalid url');
+  }
+  const vid = youtubedl(url, []);
+  vid.on('info', (info) => {
+    // eslint-disable-next-line
+    if (!override && info._duration_raw > 600) {
+      return cb && cb(false, 'Song is longer than 10 minutes');
+    }
+    if (cb) cb(true, 'Video queued');
+    return addQueue(null, info.title, vid);
+  }).on('error', err => cb && cb(false, err));
+  /*
+  youtubedl.getInfo(url, ['--no-cache-dir'], (err, info) => {
     if (err) {
-      if (cb) cb(false, err);
-      return;
+      return cb && cb(false, err);
+    // eslint-disable-next-line
+    } else if (!override && info._duration_raw > 600) {
+      return cb && cb(false, 'Song is longer than 10 minutes');
     }
     addQueue(info.url, info.title);
-    if (cb) cb(true, info.title);
+    return cb && cb(true, info.title);
   });
+  */
+  return null;
 }
 
 const server = restify.createServer();
@@ -113,7 +162,7 @@ server.pre((req, res, next) => {
   next();
 });
 
-const getData = () => ({ queue: storedData.queue, currentSong: storedData.currentSong });
+const getData = () => ({ queue: storedData.queue, currentSong: storedData.currentSong, volume: storedData.volume });
 
 server.get('/queue/get', (req, res, next) => ((res.send(getData()) || 1) && next()));
 
@@ -124,11 +173,33 @@ class ForbiddenError extends Error {
   }
 }
 
-server.use((req, res, next) => {
-  if (!req.url.match(/^\/data\/(!get).*/)) return next();
+let sessions = [];
+setInterval(() => {
+  sessions = sessions.filter(s => s.lastTimestamp > Date.now() - (60 * 60 * 1000));
+}, 10000);
+function refreshSession(address, key, userAgent) {
+  let sess = sessions.find(s => s.address == address && s.userAgent == userAgent);
+  if (!sess) {
+    sess = { address, userAgent, firstTimestamp: Date.now() };
+    sessions.push(sess);
+  }
+  Object.assign(sess, {
+    lastTimestamp: Date.now(),
+    key,
+  });
+}
+
+server.pre((req, res, next) => {
+  refreshSession(req.connection.address().address, (req.query && req.query.key) || null, req.userAgent());
+  if (!req.url.match(/^\/data\/.*/)) return next();
   try {
     if (!req.query) throw new ForbiddenError();
-    if (req.query.key != leKey) throw new ForbiddenError();
+    if (req.query.key == leKey) {
+      req.validKey = true;
+    } else if (req.url.match(/^\/data\/(?!get|add).*/)) {
+      console.log('Someone tried wrong key', req.query.key);
+      return next(new ForbiddenError());
+    }
     return next();
   } catch (e) {
     console.log('/data/ pre-error:', e);
@@ -141,10 +212,14 @@ server.use((req, res, next) => {
 const addUrlHandler = (req, res, next) => {
   addUrl(req.query.url, (suc, tit) => {
     res.send(suc ? `Video ${tit} added!` : `Error: ${tit}`);
-  });
+  }, req.validKey);
 };
 const play = id => saveData(d => d.currentSong = id);
-const dele = id => saveData(d => d.queue = d.queue.filter(s => s.id != id));
+const dele = id => saveData((d) => {
+  d.queue = d.queue.filter(s => s.id != id);
+  fs.unlink(`videocache/${id}`, () => {});
+});
+const svol = vo => saveData(d => d.volume = vo);
 const handler = (res, next) => (res.send(getData()) || 1) && next();
 
 server.get('/data/get', (req, res, next) => handler(res, next));
@@ -153,6 +228,7 @@ server.get('/data/next', (req, res, next) => ((nextSong() || 1) && handler(res, 
 server.get('/data/add', (req, res, next) => addUrlHandler(req, res, next));
 server.get('/data/play', (req, res, next) => ((play(req.query.id) || 1) && handler(res, next)));
 server.get('/data/dele', (req, res, next) => ((dele(req.query.id) || 1) && handler(res, next)));
+server.get('/data/setVolume', (req, res, next) => ((svol(req.query.volume) || 1) && handler(res, next)));
 
 server.post('/queue/add', (req, res, next) => {
   let url = req.body;
@@ -175,7 +251,35 @@ server.get('/', (req, res, next) => {
     return next();
   });
 });
-server.get('/videocache/:id', (req, res) => fs.exists(`videocache/${req.query.id}`, b => b && fs.createReadStream(`videocache/${req.query.id}`).pipe(res)));
+server.get('/videocache/:id', (req, res, next) => {
+  const song = storedData.queue.find(s => s.id == req.params.id);
+  if (!song) {
+    res.send(404, 'Video not found');
+    return next(false);
+  } else if (song.status != 'downloaded') {
+    res.send(404, 'Video not downloaded');
+    return next(false);
+  }
+  return fs.stat(`videocache/${req.params.id}`, (err, stats) => {
+    if (err || !stats.isFile()) {
+      console.log(`Marked ${song.id} ${song.title} as deleted`);
+      song.status = 'deleted';
+      saveData();
+      return next(false);
+    } else if (stats.size == 0) {
+      console.log(`Marked ${song.id} ${song.title} as corrupted`);
+      song.status = 'corrupted';
+      saveData();
+      return next(false);
+    }
+    return fs.createReadStream(`videocache/${req.params.id}`).pipe(res)
+      .on('finish', () => next(false))
+      .on('error', (e) => {
+        res.send(500, `${e}`);
+        return next(false);
+      });
+  });
+});
 
 server.listen(8123);
 
@@ -193,10 +297,11 @@ function handleData(list) {
 const listUrl = `${base}/list.php`;
 function fetchList() {
   http.get(listUrl, (res) => {
-    const { statusCode } = res;
+    const { statusCode, statusMessage } = res;
     if (statusCode !== 200) {
       res.resume();
-      throw new Error(`Request failed: ${statusCode}`);
+      console.error(`Request failed while fetching list.php: ${statusCode} ${statusMessage}`);
+      return;
     }
     let rawData = '';
     res.on('data', chunk => rawData += chunk);
@@ -204,7 +309,9 @@ function fetchList() {
       try {
         handleData(JSON.parse(rawData));
       } catch (e) {
-        console.error(`Got error while fetching list.php: ${e.message}`);
+        if (e.message.match(/Unexpected token N in JSON/)) return;
+        if (e.message.match(/list\.forEach is not a function/)) return;
+        console.error(`Got error while parsing list.php: ${e.message}`);
       }
     });
   }).on('error', (e) => {
@@ -213,3 +320,48 @@ function fetchList() {
 }
 fetchList();
 setInterval(fetchList, 5000);
+
+const formatAgo = (t) => {
+  t = (Date.now() - t) / 1000;
+  if (t < 60) return `${Math.floor(t)}s ago`;
+  if (t < 60 * 60) return `${Math.floor(t / 60)}m ago`;
+  if (t < 60 * 60 * 24) return `${Math.floor(t / 60 / 60)}h ago`;
+  return `${Math.floor(t / 60 / 60 / 24) * 10} days ago`;
+};
+
+module.exports = {
+  get data() {
+    return storedData;
+  },
+  set data(value) {
+    storedData = value;
+  },
+  get server() {
+    return server;
+  },
+  get sessions() {
+    return sessions;
+  },
+  sessionOverview() {
+    if (console.clear) console.clear();
+    console.log('===== Sessions =====');
+    sessions.sort((a, b) => a.firstTimestamp - b.firstTimestamp);
+    sessions.forEach((session) => {
+      let key = session.key ? 'Invalid key' : 'No key';
+      key = session.key == leKey ? 'Valid key' : key;
+      console.log(`[${formatAgo(session.lastTimestamp)}] ${session.address} (${key})`);
+      console.log(`\tStarted ${formatAgo(session.firstTimestamp)} ago with UA: ${session.userAgent}`);
+    });
+  },
+  saveData,
+  loadData,
+  loadEntry,
+  nextSong,
+  addQueue,
+  addUrl,
+  getData,
+  play,
+  dele,
+  fetchList,
+};
+

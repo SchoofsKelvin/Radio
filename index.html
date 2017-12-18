@@ -9,24 +9,75 @@
         crossorigin="anonymous">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
     <script src="https://code.jquery.com/jquery-3.2.1.min.js"></script>
-    <!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.12.3/umd/popper.min.js" integrity="sha384-vFJXuSJphROIrBnz7yo7oB41mKfc8JzQZiCq4NCceLEaO4IHwicKwpJf9c9IpFgh"
-        crossorigin="anonymous"></script>
-    <script src="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0-beta.2/js/bootstrap.min.js" integrity="sha384-alpBpkh1PFOepccYVYDB4do5UnbKysX5WZXm3XxPqe5iKTfUKjNkCk9SaVuEZflJ"
-        crossorigin="anonymous"></script> -->
-    <!-- <base href="http://kelvin-schoofs.sb.uclllabs.be:8123/" /> -->
     <style>
+        #slidecontainer {
+            width: 100%;
+        }
+
+        .slider {
+            -webkit-appearance: none;
+            height: 15px;
+            border-radius: 5px;
+            width: 100%;
+            background: #d3d3d3;
+            outline: none;
+            opacity: 0.7;
+            -webkit-transition: .2s;
+            transition: opacity .2s;
+        }
+
+        .slider:hover {
+            opacity: 1;
+        }
+
+        .slider::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 25px;
+            height: 25px;
+            border-radius: 50%;
+            background: #4CAF50;
+            cursor: pointer;
+        }
+
+        .slider::-moz-range-thumb {
+            width: 25px;
+            height: 25px;
+            border-radius: 50%;
+            background: #4CAF50;
+            cursor: pointer;
+        }
+
         .song>.status {
             color: #888;
             margin-left: 5px;
         }
 
         .song>button {
+            float: left;
             background: transparent;
         }
 
-        li.current > span {
+        li {
+            display: block;
+            overflow: overlay;
+        }
+
+        li>span {
+            padding-left: 3px;
+        }
+
+        li.current>span {
             font-size: 125%;
             font-weight: bolder;
+        }
+
+        .linkthing {
+            font-size: 300%;
+            font-weight: bolder;
+            float: right;
+            position: absolute;
+            top: 0;
+            right: 10px;
         }
     </style>
 </head>
@@ -42,6 +93,10 @@
         <button type="button" id="next" class="btn btn-info">NEXT</button>
         <button type="button" id="play" class="btn btn-info">PLAY/PAUZE</button>
 
+        <div id="slidecontainer">
+            <input type="range" min="1" max="100" value="50" class="slider" id="volume">
+        </div>
+
         <div style="margin: 10px;">
             <input id="url" placeholder="YouTube url" />
             <button id="addurl" type="button" class="btn btn-info">Add</button>
@@ -51,6 +106,8 @@
         <ul id="queue" class="list-unstyled">
         </ul>
 
+        <div class="linkthing">http://radio.morle.ga</div>
+
         <script>
             let storedData = {
                 currentSong: null,
@@ -59,20 +116,20 @@
                 id: 0,
             };
 
-            function postData(url, data) {
+            function postData(url, data, ignore) {
                 const key = localStorage.getItem('leKey');
                 return $.ajax({
                     url: `data/${url}`,
                     method: 'GET',
                     data: Object.assign(data || {}, { key }),
                     dataType: 'json',
-                    success: parseData,
+                    success: !ignore && parseData,
                 });
             }
 
             function playSong(song) {
                 console.log('playSong', song);
-                $("#jukebox").attr("src", song ? song.url : "");
+                $("#jukebox").attr("src", song ? `videocache/${song.id}` : "");
                 $("#jukebox").on("ended", () => postData('next'));
                 renderQueue();
             }
@@ -89,7 +146,7 @@
                         play.click(() => postData('play', { id: song.id })).appendTo(li);
                         dele.click(() => postData('dele', { id: song.id })).appendTo(li);
                     }
-                    li.append($('<span>').text(song.title)).appendTo('#queue');
+                    $('<span/>').text(song.name).appendTo(li.appendTo('#queue'));
                     if (song.id == storedData.currentSong) li.addClass('current');
                     if (song.status != "downloaded") {
                         li.append($('<span class="status"/>').text(`[${song.status.toUpperCase()}]`));
@@ -104,6 +161,10 @@
                 if (current != storedData.currentSong) {
                     const song = storedData.queue.find(s => s.id == storedData.currentSong);
                     if (song) playSong(song);
+                }
+                if (storedData.volume && localStorage.getItem('leKey')) {
+                    $('#volume').val(storedData.volume * 100);
+                    $("#jukebox")[0].volume = storedData.volume;
                 }
             }
 
@@ -120,9 +181,18 @@
                 $("#jukebox")[0][m]();
             });
             $('#addurl').click(() => {
-                const input = $('#url').show();
-                postData('add', {url: input.val()}).done(() => input.val("").show());
+                const input = $('#url').hide();
+                postData('add', { url: input.val() }, true).done(() => input.val("").show());
             });
+            $('#volume').change(() => {
+                const volume = $('#volume').val() / 100;
+                $('#jukebox')[0].volume = volume;
+                postData('setVolume', { volume });
+            });
+
+            if (document.location.hash) {
+                localStorage.setItem('leKey', document.location.hash.replace(/^#!/,''));
+            }
 
         </script>
     </div>
