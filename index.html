@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <title>Radio Projectweek Player</title>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <link rel="stylesheet" href="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0-beta.2/css/bootstrap.min.css" integrity="sha384-PsH8R72JQ3SOdhVi3uxftmaW6Vc51MKb0q5P2rRUpPvrszuE4W1povHYgTpBfshb"
+        crossorigin="anonymous">
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/4.7.0/css/font-awesome.min.css">
+    <script src="https://code.jquery.com/jquery-3.2.1.min.js"></script>
+    <!-- <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.12.3/umd/popper.min.js" integrity="sha384-vFJXuSJphROIrBnz7yo7oB41mKfc8JzQZiCq4NCceLEaO4IHwicKwpJf9c9IpFgh"
+        crossorigin="anonymous"></script>
+    <script src="https://maxcdn.bootstrapcdn.com/bootstrap/4.0.0-beta.2/js/bootstrap.min.js" integrity="sha384-alpBpkh1PFOepccYVYDB4do5UnbKysX5WZXm3XxPqe5iKTfUKjNkCk9SaVuEZflJ"
+        crossorigin="anonymous"></script> -->
+    <!-- <base href="http://kelvin-schoofs.sb.uclllabs.be:8123/" /> -->
+    <style>
+        .song>.status {
+            color: #888;
+            margin-left: 5px;
+        }
+
+        .song>button {
+            background: transparent;
+        }
+
+        li.current > span {
+            font-size: 125%;
+            font-weight: bolder;
+        }
+    </style>
+</head>
+
+<body>
+
+    <div class="container">
+
+        <h1>Player</h1>
+
+        <audio id="jukebox" src="" autoplay="true"></audio>
+
+        <button type="button" id="next" class="btn btn-info">NEXT</button>
+        <button type="button" id="play" class="btn btn-info">PLAY/PAUZE</button>
+
+        <div style="margin: 10px;">
+            <input id="url" placeholder="YouTube url" />
+            <button id="addurl" type="button" class="btn btn-info">Add</button>
+        </div>
+
+        <h3>Queue</h3>
+        <ul id="queue" class="list-unstyled">
+        </ul>
+
+        <script>
+            let storedData = {
+                currentSong: null,
+                remoteQueue: [],
+                queue: [],
+                id: 0,
+            };
+
+            function postData(url, data) {
+                const key = localStorage.getItem('leKey');
+                return $.ajax({
+                    url: `data/${url}`,
+                    method: 'GET',
+                    data: Object.assign(data || {}, { key }),
+                    dataType: 'json',
+                    success: parseData,
+                });
+            }
+
+            function playSong(song) {
+                console.log('playSong', song);
+                $("#jukebox").attr("src", song ? song.url : "");
+                $("#jukebox").on("ended", () => postData('next'));
+                renderQueue();
+            }
+
+            function renderQueue() {
+                const key = localStorage.getItem('leKey');
+                $('#next')[key ? 'show' : 'hide']();
+                $("#queue").empty();
+                $.each(storedData.queue, (key, song) => {
+                    const li = $('<li class="song"/>').attr('id', song.id);
+                    if (localStorage.getItem('leKey')) {
+                        const play = $('<button><i class="fa fa-play-circle-o"/></button>');
+                        const dele = $('<button><i class="fa fa-trash-o"/></button>');
+                        play.click(() => postData('play', { id: song.id })).appendTo(li);
+                        dele.click(() => postData('dele', { id: song.id })).appendTo(li);
+                    }
+                    li.append($('<span>').text(song.title)).appendTo('#queue');
+                    if (song.id == storedData.currentSong) li.addClass('current');
+                    if (song.status != "downloaded") {
+                        li.append($('<span class="status"/>').text(`[${song.status.toUpperCase()}]`));
+                    }
+                });
+            }
+
+            function parseData(data) {
+                const current = storedData.currentSong;
+                renderQueue();
+                storedData = data;
+                if (current != storedData.currentSong) {
+                    const song = storedData.queue.find(s => s.id == storedData.currentSong);
+                    if (song) playSong(song);
+                }
+            }
+
+            function loadData() {
+                if (window.pauseQueue) return;
+                postData('get');
+            }
+            setInterval(loadData, 1000);
+            $(document).ready(loadData);
+
+            $('#next').click(() => postData('next'));
+            $("#play").click(() => {
+                const m = $("#jukebox")[0].paused ? 'play' : 'pause';
+                $("#jukebox")[0][m]();
+            });
+            $('#addurl').click(() => {
+                const input = $('#url').show();
+                postData('add', {url: input.val()}).done(() => input.val("").show());
+            });
+
+        </script>
+    </div>
+</body>
+
+</html>
