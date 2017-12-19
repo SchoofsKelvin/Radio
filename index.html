@@ -79,6 +79,12 @@
             top: 0;
             right: 10px;
         }
+
+        @media (max-width: 800px) {
+            .linkthing {
+                display: none;
+            }
+        }
     </style>
 </head>
 
@@ -87,6 +93,7 @@
     <div class="container">
 
         <h1>Player</h1>
+        <h2 id="note"></h2>
 
         <audio id="jukebox" src="" autoplay="true"></audio>
 
@@ -113,6 +120,7 @@
                 currentSong: null,
                 remoteQueue: [],
                 queue: [],
+                note: '',
                 id: 0,
             };
 
@@ -121,16 +129,25 @@
                 return $.ajax({
                     url: `data/${url}`,
                     method: 'GET',
-                    data: Object.assign(data || {}, { key }),
+                    data: Object.assign(data || {}, key ? { key } : {}),
                     dataType: 'json',
                     success: !ignore && parseData,
                 });
             }
 
+            let autoNext = true;
+            window.autoNext = true;
             function playSong(song) {
                 console.log('playSong', song);
+                const key = localStorage.getItem('leKey');
                 $("#jukebox").attr("src", song ? `videocache/${song.id}` : "");
-                $("#jukebox").on("ended", () => postData('next'));
+                $("#jukebox").on("ended", () => {
+                    if (!key || !autoNext) return;
+                    if (!window.autoNext) return;
+                    setTimeout(() => autoNext = true, 3000);
+                    postData('next');
+                    autoNext = false;
+                });
                 renderQueue();
             }
 
@@ -158,9 +175,16 @@
                 const current = storedData.currentSong;
                 renderQueue();
                 storedData = data;
+                if (data.note) {
+                    $('#note').show().html(data.note);
+                } else {
+                    $('#note').hide().text("");
+                }
                 if (current != storedData.currentSong) {
                     const song = storedData.queue.find(s => s.id == storedData.currentSong);
+                    setTimeout(() => autoNext = true, 3000);
                     if (song) playSong(song);
+                    autoNext = false;
                 }
                 if (storedData.volume && localStorage.getItem('leKey')) {
                     $('#volume').val(storedData.volume * 100);
@@ -187,11 +211,13 @@
             $('#volume').change(() => {
                 const volume = $('#volume').val() / 100;
                 $('#jukebox')[0].volume = volume;
-                postData('setVolume', { volume });
+                if (localStorage.getItem('leKey')) {
+                    postData('setVolume', { volume });
+                }
             });
 
             if (document.location.hash) {
-                localStorage.setItem('leKey', document.location.hash.replace(/^#!/,''));
+                localStorage.setItem('leKey', document.location.hash.replace(/^#!/, ''));
             }
 
         </script>

@@ -7,12 +7,13 @@ const { URL } = require('url');
 const fs = require('fs');
 const youtubedl = require('youtube-dl');
 
-const leKey = 'Le GG';
+const isValidKey = key => key == 'Le GG' || key == '99109';
 
 let storedData = {
   currentSong: null,
   remoteQueue: [],
   queue: [],
+  note: '',
   volume: 0.5,
   id: 0,
 };
@@ -123,7 +124,7 @@ function addQueue(url, name, stream) {
   storedData.queue.push(entry);
   saveData();
 }
-function addUrl(url, cb, override) {
+function addUrl(url, cb, override, title) {
   if (url.match(/^url=/)) url = url.substr(4);
   url = url.replace(/^https:\/\//, 'http://');
   if (!url.match(/^http:\/\//)) {
@@ -135,8 +136,8 @@ function addUrl(url, cb, override) {
     if (!override && info._duration_raw > 600) {
       return cb && cb(false, 'Song is longer than 10 minutes');
     }
-    if (cb) cb(true, 'Video queued');
-    return addQueue(null, info.title, vid);
+    if (cb) cb(true, info.title);
+    return addQueue(null, title || info.title, vid);
   }).on('error', err => cb && cb(false, err));
   /*
   youtubedl.getInfo(url, ['--no-cache-dir'], (err, info) => {
@@ -162,7 +163,7 @@ server.pre((req, res, next) => {
   next();
 });
 
-const getData = () => ({ queue: storedData.queue, currentSong: storedData.currentSong, volume: storedData.volume });
+const getData = () => ({ currentSong: storedData.currentSong, volume: storedData.volume, note: storedData.note, queue: storedData.queue });
 
 server.get('/queue/get', (req, res, next) => ((res.send(getData()) || 1) && next()));
 
@@ -175,30 +176,34 @@ class ForbiddenError extends Error {
 
 let sessions = [];
 setInterval(() => {
-  sessions = sessions.filter(s => s.lastTimestamp > Date.now() - (60 * 60 * 1000));
+  sessions = sessions.filter(s => s.lastTimestamp > Date.now() - (2 * 60 * 60 * 1000));
 }, 10000);
-function refreshSession(address, key, userAgent) {
+function refreshSession(req) {
+  const address = req.connection.remoteAddress;
+  const key = (req.query && req.query.key) || null;
+  const userAgent = req.userAgent();
   let sess = sessions.find(s => s.address == address && s.userAgent == userAgent);
   if (!sess) {
-    sess = { address, userAgent, firstTimestamp: Date.now() };
+    sess = { address, userAgent, firstTimestamp: Date.now(), requests: [] };
     sessions.push(sess);
   }
-  Object.assign(sess, {
+  return Object.assign(sess, {
     lastTimestamp: Date.now(),
     key,
   });
 }
 
 server.pre((req, res, next) => {
-  refreshSession(req.connection.address().address, (req.query && req.query.key) || null, req.userAgent());
   if (!req.url.match(/^\/data\/.*/)) return next();
+  refreshSession(req);
   try {
     if (!req.query) throw new ForbiddenError();
-    if (req.query.key == leKey) {
+    if (isValidKey(req.query.key)) {
       req.validKey = true;
     } else if (req.url.match(/^\/data\/(?!get|add).*/)) {
-      console.log('Someone tried wrong key', req.query.key);
-      return next(new ForbiddenError());
+      console.log('Someone tried wrong key', req.query.key, req.connection.remoteAddress, req.url);
+      res.send(403, 'Wrong or no key found');
+      return next(false);
     }
     return next();
   } catch (e) {
@@ -212,6 +217,13 @@ server.pre((req, res, next) => {
 const addUrlHandler = (req, res, next) => {
   addUrl(req.query.url, (suc, tit) => {
     res.send(suc ? `Video ${tit} added!` : `Error: ${tit}`);
+    next(false);
+    if (suc) {
+      const session = refreshSession(req);
+      if (!session) return;
+      console.log(`${session.address} requested ${req.query.url} - ${tit}`);
+      session.requests.push([req.query.url, tit]);
+    }
   }, req.validKey);
 };
 const play = id => saveData(d => d.currentSong = id);
@@ -224,7 +236,8 @@ const handler = (res, next) => (res.send(getData()) || 1) && next();
 
 server.get('/data/get', (req, res, next) => handler(res, next));
 // server.get(/^\/data\/.*/, (req, res, next) => handler(res, next));
-server.get('/data/next', (req, res, next) => ((nextSong() || 1) && handler(res, next)));
+server.get('/data/authorized', (req, res, next) => (console.log(req.validKey ? 'Yes' : 'No') || 1) && next());
+server.get('/data/next', (req, res, next) => ((console.log('nextSong requested by', req.connection.remoteAddress) || (nextSong() || 1)) && handler(res, next)));
 server.get('/data/add', (req, res, next) => addUrlHandler(req, res, next));
 server.get('/data/play', (req, res, next) => ((play(req.query.id) || 1) && handler(res, next)));
 server.get('/data/dele', (req, res, next) => ((dele(req.query.id) || 1) && handler(res, next)));
@@ -291,6 +304,7 @@ function handleData(list) {
     if (!entry.path) return;
     storedData.remoteQueue.push(entry.id);
     addQueue(base + entry.path, entry.title);
+    console.log(`Added ${entry.title} from remote`);
   });
 }
 
@@ -347,11 +361,23 @@ module.exports = {
     console.log('===== Sessions =====');
     sessions.sort((a, b) => a.firstTimestamp - b.firstTimestamp);
     sessions.forEach((session) => {
-      let key = session.key ? 'Invalid key' : 'No key';
-      key = session.key == leKey ? 'Valid key' : key;
+      let key = session.key;
+      if (isValidKey(key)) {
+        key += ' (Valid)';
+      } else if (!key) {
+        key = 'No key';
+      }
       console.log(`[${formatAgo(session.lastTimestamp)}] ${session.address} (${key})`);
       console.log(`\tStarted ${formatAgo(session.firstTimestamp)} ago with UA: ${session.userAgent}`);
+      session.requests.forEach(([url, title]) => console.log(`\t- ${url} - ${title}`));
     });
+  },
+  clear() {
+    fs.readdir('videocache', (err, items) => items.forEach(f => fs.unlink(`videocache/${f}`, () => {})));
+    storedData.queue = [];
+    storedData.id = 0;
+    storedData.currentSong = null;
+    saveData();
   },
   saveData,
   loadData,
@@ -364,4 +390,3 @@ module.exports = {
   dele,
   fetchList,
 };
-
